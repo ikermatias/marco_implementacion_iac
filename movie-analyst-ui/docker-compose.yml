@@ -1,0 +1,9 @@
+version: '3'
+services:
+  front:
+    image: movie-ui
+    ports:
+     - "3030:3030"
+
+  redis:
+    image: "redis:alpine"

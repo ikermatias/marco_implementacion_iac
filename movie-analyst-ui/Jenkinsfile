@@ -1,0 +1,33 @@
+#!groovy
+
+node {
+  
+  step([$class: 'WsCleanup'])
+
+  stage "Checkout Git repo"
+    checkout scm
+  stage "Run tests"
+    sh 'whoami'
+    sh "sudo docker run -v \$(pwd):/data --rm usemtech/nodejs-mocha npm install"
+    sh "sudo docker run -v \$(pwd):/data --rm usemtech/nodejs-mocha npm install chai chai-http"
+    sh "sudo docker run -v \$(pwd):/data --rm usemtech/nodejs-mocha npm test"
+  stage "Build RPM" 
+    sh "[ -d ./rpm ] || mkdir ./rpm"
+    sh "tree"
+    sh "pwd"
+    sh "sudo docker run -v \$(pwd):/data/movie-app -v \$(pwd)/rpm:/data/rpm --rm tenzer/fpm -s dir -t rpm -n movie-app -v \$(git rev-parse --short HEAD) --description \"Movie app\" --directories /var/www/movie-app --package /data/rpm/movie-app-\$(git rev-parse --short HEAD).rpm /data/movie-app=/var/www/"
+  stage "Update YUM repo"
+    sh "sudo [ -d ~/repo/rpm/movie-app/ ] || sudo mkdir -p ~/repo/rpm/movie-app/"
+    sh "sudo mv ./rpm/*.rpm ~/repo/rpm/movie-app/"
+    sh "sudo createrepo ~/repo/"
+    sh "sudo aws s3 sync ~/repo s3://artifacts-pdg/ --region us-east-1 --delete"
+  stage "Check YUM repo"
+    sh "sudo yum clean all"
+    sh "sudo yum update -y"
+    sh "sudo yum info movie-app-\$(git rev-parse --short HEAD)"
+  stage "Trigger downstream"
+    echo 'parametro'
+ 
+    def versionApp = sh returnStdout: true, script:"printf \$(git rev-parse --short HEAD)"
+    build job: "movie-cdelivery", parameters: [[$class: "StringParameterValue", name: "APP_VERSION", value: "${versionApp}-1"]], wait: false
+}

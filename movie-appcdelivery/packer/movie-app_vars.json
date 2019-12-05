@@ -1,0 +1,9 @@
+{
+    "srcAmiId": "ami-0b69ea66ff7391e80",
+    "amiName": "movie-app",
+    "sshUser": "ec2-user",
+    "instanceProfile": "movie-app",
+    "subnetId": "subnet-0d39af7e2ef496b0c",
+    "vpcId": "vpc-0ca88b84c246c1b90",
+    "userDataFile": "packer/movie-app_userdata.sh"
+  }

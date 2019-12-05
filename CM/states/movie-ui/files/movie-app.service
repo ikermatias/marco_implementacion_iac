@@ -1,0 +1,15 @@
+[Unit]
+Description=Movie-app Frontend
+
+[Service]
+ExecStart=/var/www/movie-app/server.js
+Restart=always
+User=nobody
+# Note Debian/Ubuntu uses 'nogroup', RHEL/Fedora uses 'nobody'
+Group=nobody
+Environment=PATH=/usr/bin:/usr/local/bin
+Environment=NODE_ENV=production
+WorkingDirectory=/var/www/movie-app
+
+[Install]
+WantedBy=multi-user.target

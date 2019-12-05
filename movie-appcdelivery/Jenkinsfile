@@ -1,0 +1,94 @@
+#!groovy
+
+node {
+
+  step([$class: 'WsCleanup'])
+
+  stage "Checkout Git repo"
+    checkout scm
+
+  stage "Checkout additional repos"
+    dir("Configuration_management") {
+      git "https://git-codecommit.us-east-1.amazonaws.com/v1/repos/Configuration_management"
+    }
+
+  stage "Run Packer"
+    sh "/opt/packer validate -var=\"appVersion=$APP_VERSION\" -var-file=packer/movie-app_vars.json packer/movie-app.json"
+    sh "/opt/packer build -machine-readable -var=\"appVersion=$APP_VERSION\" -var-file=packer/movie-app_vars.json packer/movie-app.json | tee packer/packer.log"
+
+  stage "Deploy AMI"
+
+    string amiIdUnFormat = sh returnStdout: true, script:"tail -n1 packer/packer.log | awk '{printf \$NF}' "
+    def amiId = amiIdUnFormat.replace("\\n","")
+    def ec2Keypair = "educate"
+    def secGroup = "sg-034c5b6e5f1207d08"
+    def instanceType = "t2.micro"
+    def subnetId = "subnet-0d39af7e2ef496b0c"
+    def instanceProfile = "movie-app"
+
+    sh "tail -n1 packer/packer.log"
+    sh "cat packer/packer.log"
+    echo "Esto tiene packer.log \$(cat packer/packer.log)"
+    echo "Launching an instance from ${amiId}"
+    sh "aws ec2 run-instances \
+        --region us-east-1 \
+        --image-id ${amiId} \
+        --key-name ${ec2Keypair} \
+        --security-group-ids ${secGroup} \
+        --instance-type ${instanceType} \
+        --subnet-id ${subnetId} \
+        --iam-instance-profile Name=${instanceProfile} \
+        | tee .ec2_run-instances.log \
+       "
+
+    
+    def instanceId = sh returnStdout: true, script: "printf \$(jq .Instances[0].InstanceId < .ec2_run-instances.log)"
+
+    sh "aws ec2 create-tags --resources ${instanceId} \
+        --region us-east-1 \
+        --tags Key=Name,Value=\"Jenkins (demo-app-$APP_VERSION)\" Key=CreatedBy,Value=Jenkins \
+       "
+
+    echo "Registering with ELB"
+    def elbId = "movie-app-elb"
+    sh "aws elb register-instances-with-load-balancer \
+        --region us-east-1 \
+        --load-balancer-name ${elbId} \
+        --instances ${instanceId} \
+       "
+
+    echo "Waiting for the instance to come into service"
+    sh "while [ \"x\$(aws elb describe-instance-health --region us-east-1 --load-balancer-name ${elbId} --instances ${instanceId} | jq .InstanceStates[].State | tr -d '\"')\" != \"xInService\" ]; do : ; sleep 60; done"
+
+
+  stage "Run AB test"
+    def elbUri = "http://movie-app-elb-751239979.us-east-1.elb.amazonaws.com/"  
+    sh "ab -c5 -n1000 -d -S ${elbUri} | tee .ab.log"
+    def non2xx = sh returnStdout: true, script:"set -o pipefail;(grep 'Non-2xx' .ab.log | awk '{printf \$NF}') || (printf 0)"
+    //def writeErr = sh returnStdout: true, script:"grep 'Write errors' .ab.log | awk '{printf \$NF}'"
+    def failedReqs = sh returnStdout: true, script:"grep 'Failed requests' .ab.log | awk '{printf \$NF}'"
+    def rps = sh returnStdout: true, script:"grep 'Requests per second' .ab.log | awk '{printf \$4}' | awk -F. '{printf \$1}'"
+    def docLen = sh returnStdout: true, script:"grep 'Document Length' .ab.log | awk '{printf \$3}'"
+
+    echo "Non2xx=${non2xx}, FailedReqs=${failedReqs}, ReqsPerSec=${rps}"
+    sh "if [ ${non2xx} -gt 10 ] || [ ${failedReqs} -gt 10 ] || [ ${rps} -lt 1000 ]; then \
+          echo \"ERR: AB test failed\" | tee -a .error.log; \
+        fi \
+       "
+
+  stage "Terminate test instance"
+    sh "aws ec2 terminate-instances --region us-east-1 --instance-ids ${instanceId}"
+
+  stage "Verify test results"
+    sh "if [ -s '.error.log' ]; then \
+          cat '.error.log'; \
+          :> '.error.log'; \
+          exit 100; \
+        else \
+          echo 'Tests OK'; \
+        fi \
+       "
+
+    stage "Trigger downstream"
+    build job: "movie-cployment", parameters: [[$class: "StringParameterValue", name: "AMI_ID", value: "${amiId}"]], wait: false
+}
